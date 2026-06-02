@@ -5,6 +5,7 @@ import { IconSparkles } from "@tabler/icons-react";
 import { auth } from "@/auth";
 import { db } from "@/db";
 import { workflows } from "@/db/schema";
+import { EmptyState } from "@/components/empty-state";
 import { WorkflowCard } from "./workflow-card";
 import { AddWorkflowDialog } from "./add-workflow-dialog";
 
@@ -27,12 +28,12 @@ export default async function WorkflowsPage() {
             Bibliothèque cabinet
           </p>
           <h1 className="mt-2 font-heading text-4xl tracking-tight">
-            Workflows.
+            Trames.
           </h1>
           <p className="mt-3 text-muted-foreground">
-            Prompts réutilisables — résumé d&apos;arrêt, analyse de clause,
-            due diligence. Insérez-les d&apos;un clic dans une conversation
-            via l&apos;icône{" "}
+            Prompts réutilisables du cabinet — résumé d&apos;arrêt, analyse de
+            clause, due diligence. Insérez-les d&apos;un clic dans une
+            conversation via l&apos;icône{" "}
             <IconSparkles className="inline size-3.5 align-text-bottom" />.
           </p>
         </div>
@@ -40,7 +41,25 @@ export default async function WorkflowsPage() {
       </header>
 
       {list.length === 0 ? (
-        <EmptyState />
+        <EmptyState title="Pas encore de trame.">
+          <p>
+            Une trame est un prompt réutilisable que vous insérez d&apos;un clic
+            dans une conversation. Créez-en un depuis votre pratique — Louis ne
+            livre pas de templates par défaut, c&apos;est votre cabinet qui
+            définit sa bibliothèque.
+          </p>
+          <p className="mt-3">
+            Besoin d&apos;inspiration ?{" "}
+            <Link
+              href="/settings/skills"
+              className="text-primary hover:underline underline-offset-2"
+            >
+              Importez des modèles de skills juridiques
+            </Link>{" "}
+            comme point de départ — relisez-les et adaptez-les avant de les
+            utiliser.
+          </p>
+        </EmptyState>
       ) : (
         <ul className="divide-y divide-border border-y border-border">
           {list.map((w) => (
@@ -49,32 +68,5 @@ export default async function WorkflowsPage() {
         </ul>
       )}
     </main>
-  );
-}
-
-function EmptyState() {
-  return (
-    <div className="py-16 border-y border-dashed border-border">
-      <p className="font-heading text-2xl tracking-tight">
-        Pas encore de workflow.
-      </p>
-      <p className="mt-3 text-sm text-muted-foreground max-w-md">
-        Un workflow est un prompt réutilisable que vous insérez d&apos;un clic
-        dans une conversation. Créez-en un depuis votre pratique — Louis ne
-        livre pas de templates par défaut, c&apos;est votre cabinet qui définit
-        sa bibliothèque.
-      </p>
-      <p className="mt-3 text-sm text-muted-foreground max-w-md">
-        Besoin d&apos;inspiration ?{" "}
-        <Link
-          href="/settings/skills"
-          className="text-primary hover:underline underline-offset-2"
-        >
-          Importez des modèles de skills juridiques
-        </Link>{" "}
-        comme point de départ — relisez-les et adaptez-les avant de les
-        utiliser.
-      </p>
-    </div>
   );
 }

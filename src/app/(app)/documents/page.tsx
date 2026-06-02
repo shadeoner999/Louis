@@ -1,18 +1,21 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
-import { asc, desc, eq, and } from "drizzle-orm";
+import { asc, desc, eq, and, sql } from "drizzle-orm";
 import { IconFolder, IconChevronRight } from "@tabler/icons-react";
 import { auth } from "@/auth";
 import { db } from "@/db";
 import {
   documents,
+  documentChunks,
   documentFolders,
+  providerKeys,
   projects,
   type Document,
   type DocumentFolder,
 } from "@/db/schema";
 import { Badge } from "@/components/ui/badge";
 import { UploadButton } from "./upload-button";
+import { ReindexAllButton } from "./reindex-all-button";
 import { DocumentRow } from "./document-row";
 import { FolderRow } from "./folder-row";
 import { NewFolderButton } from "./new-folder-button";
@@ -35,7 +38,14 @@ export default async function DocumentsPage({
   // Charge tout — volume documentaire d'un cabinet reste modeste pour l'usage
   // interne (quelques milliers de docs max). On filtre côté JS pour pouvoir
   // construire en parallèle la breadcrumb et les sous-dossiers.
-  const [allDocs, allFolders, projectList, currentFolder] = await Promise.all([
+  const [
+    allDocs,
+    allFolders,
+    projectList,
+    currentFolder,
+    chunkCountRows,
+    mistralKeys,
+  ] = await Promise.all([
     db
       .select()
       .from(documents)
@@ -64,7 +74,36 @@ export default async function DocumentsPage({
           .limit(1)
           .then((r) => r[0] ?? null)
       : Promise.resolve(null),
+    // R6 : nombre de chunks indexés par document (transparence RAG).
+    db
+      .select({
+        documentId: documentChunks.documentId,
+        n: sql<number>`count(*)::int`,
+      })
+      .from(documentChunks)
+      .innerJoin(documents, eq(documents.id, documentChunks.documentId))
+      .where(eq(documents.userId, userId))
+      .groupBy(documentChunks.documentId),
+    db
+      .select({ id: providerKeys.id })
+      .from(providerKeys)
+      .where(
+        and(
+          eq(providerKeys.userId, userId),
+          eq(providerKeys.type, "mistral"),
+          eq(providerKeys.isActive, true)
+        )
+      )
+      .limit(1),
   ]);
+
+  // Transparence RAG : chunks par doc + présence d'une clé Mistral active
+  // (requise pour embedder). Permet d'afficher « indexé (N) / non indexé /
+  // clé Mistral manquante » par document.
+  const chunkCountByDoc = new Map<string, number>(
+    chunkCountRows.map((r) => [r.documentId, r.n])
+  );
+  const hasMistralKey = mistralKeys.length > 0;
 
   // Construit la breadcrumb en remontant via parentFolderId.
   const folderById = new Map<string, DocumentFolder>(
@@ -137,6 +176,7 @@ export default async function DocumentsPage({
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          {totalDocs > 0 && <ReindexAllButton />}
           <NewFolderButton parentFolderId={currentFolderId} />
           <UploadButton folderId={currentFolderId} />
         </div>
@@ -193,7 +233,10 @@ export default async function DocumentsPage({
           >
             {subFolders.map((f) => (
               <li key={f.id}>
-                <FolderRow folder={f} />
+                <FolderRow
+                  folder={f}
+                  subfolderCount={countDescendantFolders(f.id, allFolders)}
+                />
               </li>
             ))}
             {familyViews.map((fv) => (
@@ -203,6 +246,8 @@ export default async function DocumentsPage({
                   projects={projectList}
                   folders={allFolders}
                   versions={fv.older}
+                  chunkCount={chunkCountByDoc.get(fv.latest.id) ?? 0}
+                  hasMistralKey={hasMistralKey}
                 />
               </li>
             ))}
@@ -213,6 +258,17 @@ export default async function DocumentsPage({
       <FormatsNote />
     </main>
   );
+}
+
+/** Nombre de sous-dossiers (récursif) d'un dossier — pour avertir de la
+ * suppression en cascade (H20). */
+function countDescendantFolders(
+  folderId: string,
+  all: DocumentFolder[]
+): number {
+  return all
+    .filter((f) => f.parentFolderId === folderId)
+    .reduce((n, c) => n + 1 + countDescendantFolders(c.id, all), 0);
 }
 
 function EmptyState({ isRoot }: { isRoot: boolean }) {
@@ -236,8 +292,9 @@ function FormatsNote() {
       <p className="font-medium text-foreground">Formats acceptés</p>
       <p className="mt-1">
         PDF, DOCX et texte brut. Limite : 25 Mo par fichier, ~500 000
-        caractères extraits. Au-delà, l&apos;extraction est tronquée — le
-        RAG (chunking + embeddings) arrive en v0.3.
+        caractères extraits (au-delà, l&apos;extraction est tronquée). Chaque
+        document est indexé pour la recherche sémantique (RAG) dès qu&apos;une
+        clé Mistral active est configurée.
       </p>
     </aside>
   );

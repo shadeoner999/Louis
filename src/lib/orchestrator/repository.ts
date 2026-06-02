@@ -60,6 +60,8 @@ export async function loadPipelineForUser(
     modelOverride: a.modelOverride ?? fallback.modelOverride ?? null,
     systemPrompt: a.systemPrompt ?? null,
     toolAllowlist: a.toolAllowlist ?? null,
+    ragScope: a.ragScope ?? null,
+    temperature: a.temperature ?? null,
   }));
 
   return {

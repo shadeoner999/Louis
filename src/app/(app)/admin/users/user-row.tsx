@@ -13,6 +13,7 @@ import {
   IconTrash,
 } from "@tabler/icons-react";
 import { Badge } from "@/components/ui/badge";
+import { formatRelativeFr } from "@/lib/format/time";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -63,20 +64,6 @@ export type UserStats = {
 
 export type UserEntryWithStats = Entry & { stats: UserStats };
 
-function formatRelativeFr(d: Date | string | null): string {
-  if (!d) return "jamais utilisé";
-  const date = typeof d === "string" ? new Date(d) : d;
-  const ms = Date.now() - date.getTime();
-  const m = Math.floor(ms / 60_000);
-  if (m < 1) return "à l'instant";
-  if (m < 60) return `il y a ${m} min`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `il y a ${h} h`;
-  const days = Math.floor(h / 24);
-  if (days < 30) return `il y a ${days} j`;
-  if (days < 365) return `il y a ${Math.floor(days / 30)} mois`;
-  return date.toLocaleDateString("fr-FR");
-}
 
 function formatEurFromCents(cents: number | null): string {
   if (cents == null) return "—";
@@ -86,7 +73,7 @@ function formatEurFromCents(cents: number | null): string {
 function StatCell({ label, value }: { label: string; value: number }) {
   return (
     <div className="text-right">
-      <div className="text-[9px] uppercase tracking-wider opacity-70">
+      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
         {label}
       </div>
       <div className="mt-0.5 font-medium text-foreground">{value}</div>
@@ -218,7 +205,13 @@ export function UserRow({
               : "jamais utilisé"}
         </div>
         {feedback && (
-          <div className="text-xs text-success mt-1">{feedback}</div>
+          <div
+            role="status"
+            aria-live="polite"
+            className="text-xs text-success mt-1"
+          >
+            {feedback}
+          </div>
         )}
 
         {/* Résumé compact des stats sur mobile : la rangée détaillée
@@ -273,7 +266,7 @@ export function UserRow({
         <StatCell label="Docs" value={entry.stats.docCount} />
         <StatCell label="Projets" value={entry.stats.projectCount} />
         <div className="text-right">
-          <div className="text-[9px] uppercase tracking-wider opacity-70">
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
             Ce mois
           </div>
           <div

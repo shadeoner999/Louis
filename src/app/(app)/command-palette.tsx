@@ -12,7 +12,6 @@ import {
   IconBolt,
   IconCash,
   IconTable,
-  IconLayoutDashboard,
   IconSettings,
   IconPlus,
   IconShieldLock,
@@ -27,6 +26,7 @@ import {
   CommandSeparator,
   CommandShortcut,
 } from "@/components/ui/command";
+import { PRIMARY_NAV, type NavItem } from "@/lib/navigation";
 
 type Item = { id: string; label: string };
 
@@ -38,20 +38,22 @@ type Props = {
   isAdmin: boolean;
 };
 
-const PAGES = [
-  { href: "/dashboard", label: "Tableau de bord", icon: IconLayoutDashboard },
-  { href: "/chat", label: "Conversations", icon: IconMessageCircle },
-  { href: "/projects", label: "Projets", icon: IconFolders },
-  { href: "/documents", label: "Documents", icon: IconFileText },
-  { href: "/tabular-reviews", label: "Analyses tabulaires", icon: IconTable },
-  { href: "/workflows", label: "Workflows", icon: IconLibrary },
+// Pages « profondes » propres à la palette (réglages granulaires que la barre
+// latérale n'expose pas). La nav primaire vient de la source unique PRIMARY_NAV.
+const SETTINGS_PAGES: NavItem[] = [
   { href: "/settings/general", label: "Paramètres", icon: IconSettings },
   { href: "/settings/profile", label: "Profil", icon: IconSettings },
   { href: "/settings/usage", label: "Coûts & usage", icon: IconCash },
   { href: "/settings/providers", label: "Providers IA", icon: IconKey },
-  { href: "/settings/connectors", label: "Connecteurs", icon: IconPlugConnected },
+  {
+    href: "/settings/connectors",
+    label: "Connecteurs",
+    icon: IconPlugConnected,
+  },
   { href: "/settings/mcp", label: "Serveurs MCP", icon: IconBolt },
-] as const;
+];
+
+const PAGES: NavItem[] = [...PRIMARY_NAV, ...SETTINGS_PAGES];
 
 const ACTIONS = [
   { href: "/chat", label: "Nouvelle conversation", icon: IconMessageCircle },
@@ -162,7 +164,7 @@ export function CommandPalette({
         {workflows.length > 0 && (
           <>
             <CommandSeparator />
-            <CommandGroup heading="Workflows">
+            <CommandGroup heading="Trames">
               {workflows.map((w) => (
                 <CommandItem
                   key={w.id}

@@ -8,6 +8,7 @@ import {
   AgentEventBadge,
   dedupeAgentEvents,
   type AgentEventData,
+  type AgentRetryData,
 } from "./agent-event-badge";
 import {
   LiveWorkflowPanel,
@@ -16,6 +17,7 @@ import {
 import {
   AgentTheatre,
   buildAgentTurns,
+  OpenTheatreButton,
   type AgentTurn,
 } from "./agent-theatre";
 import { ChatErrorBanner } from "./chat-error-banner";
@@ -71,6 +73,15 @@ import {
 } from "@/lib/providers/catalog";
 import { MODEL_CATALOG, DEFAULT_MODEL } from "@/lib/providers/models";
 import { computeCost, formatCost } from "@/lib/providers/pricing";
+import { estimateCalls, estimateRunCost } from "@/lib/orchestrator/cost-estimate";
+import {
+  LegifranceCitations,
+  PappersResults,
+  PappersCompany,
+  type LegifranceHitView,
+  type PappersResultView,
+  type PappersDetailsView,
+} from "./citation-cards";
 
 type KeyOption = {
   id: string;
@@ -110,6 +121,10 @@ type PipelineOption = {
   description: string | null;
   isPreset: boolean;
   agentCount: number;
+  /** Mode d'exécution — pilote l'estimation du nombre d'appels LLM. */
+  mode: "sequential" | "council" | "parallel";
+  /** Tours de débat (mode council). null/1 sinon. */
+  rounds: number | null;
   agents: PipelineAgentOption[];
 };
 
@@ -146,6 +161,8 @@ type Props = {
    */
   enabledModels?: EnabledModel[];
   initialUsage: Usage;
+  /** Mapping slug → libellé des compétences activées (H4). */
+  skillLabels?: Record<string, string>;
 };
 
 function toUIMessages(rows: Props["initialMessages"]): UIMessage[] {
@@ -431,7 +448,7 @@ function EditedDocumentCard({
             <li key={edit.index} className="px-4 py-3 text-xs">
               <div className="grid sm:grid-cols-2 gap-2">
                 <div className="bg-destructive/5 border border-destructive/15 rounded px-2 py-1.5">
-                  <p className="text-[9px] uppercase tracking-wider text-destructive/70 font-semibold mb-0.5">
+                  <p className="text-[10px] uppercase tracking-wider text-destructive font-semibold mb-0.5">
                     Avant
                   </p>
                   <p className="font-mono text-foreground/80 line-through decoration-destructive/40">
@@ -439,7 +456,7 @@ function EditedDocumentCard({
                   </p>
                 </div>
                 <div className="bg-primary/5 border border-primary/15 rounded px-2 py-1.5">
-                  <p className="text-[9px] uppercase tracking-wider text-primary font-semibold mb-0.5">
+                  <p className="text-[10px] uppercase tracking-wider text-primary font-semibold mb-0.5">
                     Après
                   </p>
                   <p className="font-mono">{edit.replace || <em className="text-muted-foreground">(suppression)</em>}</p>
@@ -578,6 +595,29 @@ function ToolPart({
     );
   }
 
+  // R3 : citations Légifrance / Pappers cliquables (au lieu de jeter les URLs
+  // sources dans une pill grise « Terminé »).
+  if (name === "legifrance_search" && !isPending) {
+    const d = unwrapToolResult<{ query: string; hits: LegifranceHitView[] }>(
+      output
+    );
+    if (d?.hits?.length) return <LegifranceCitations hits={d.hits} />;
+  }
+
+  if (name === "pappers_search" && !isPending) {
+    const d = unwrapToolResult<{
+      query: string;
+      total: number;
+      results: PappersResultView[];
+    }>(output);
+    if (d?.results?.length) return <PappersResults results={d.results} />;
+  }
+
+  if (name === "pappers_get" && !isPending) {
+    const d = unwrapToolResult<PappersDetailsView>(output);
+    if (d?.siren) return <PappersCompany d={d} />;
+  }
+
   return (
     <div className="relative overflow-hidden rounded-md border border-border bg-muted/40 px-3 py-1.5 text-xs flex items-center gap-2 max-w-[80%]">
       {isPending ? (
@@ -624,7 +664,7 @@ function WorkflowPickerContent({
     <div className="max-h-96 overflow-y-auto py-1">
       <div className="px-3 py-2 border-b border-border flex items-center gap-2">
         <IconLibrary className="size-3.5 text-muted-foreground" />
-        <p className="text-xs font-medium">Workflows</p>
+        <p className="text-xs font-medium">Trames</p>
         <Link
           href="/workflows"
           className="ml-auto text-[10px] text-primary hover:underline underline-offset-2"
@@ -797,6 +837,7 @@ export function ChatShell({
   pipelines,
   enabledModels,
   initialUsage,
+  skillLabels = {},
 }: Props) {
   const router = useRouter();
   const [providerKeyId, setProviderKeyId] = useState(initialProviderKeyId);
@@ -1410,6 +1451,17 @@ export function ChatShell({
     if (!lastAssistant?.parts) return baseStates;
 
     for (const part of lastAssistant.parts) {
+      // H10 : retry d'un débatteur reflété dans le panel — la carte passe en
+      // « nouvelle tentative N… » tant qu'elle n'a pas fini.
+      if (part.type === "data-agent-retry") {
+        const r = (part as { data?: AgentRetryData }).data;
+        if (!r?.agentId) continue;
+        const ridx = baseStates.findIndex((s) => s.id === r.agentId);
+        if (ridx >= 0) {
+          baseStates[ridx] = { ...baseStates[ridx], retryAttempt: r.attempt };
+        }
+        continue;
+      }
       if (part.type !== "data-agent-event") continue;
       const data = (part as { data?: AgentEventData }).data;
       if (!data?.agentId) continue;
@@ -1432,6 +1484,32 @@ export function ChatShell({
       }
     }
     return baseStates;
+  }, [messages, selectedPipeline]);
+
+  // H10 : tour courant d'un conseil multi-tours, dérivé du max `round` vu
+  // dans les agent_start du dernier message assistant. Alimente le libellé
+  // « Tour N/M » du panneau live (null hors council ou à 1 tour).
+  const councilRound = useMemo<{ current: number; total: number } | null>(() => {
+    if (!selectedPipeline || selectedPipeline.mode !== "council") return null;
+    const total = selectedPipeline.rounds ?? 1;
+    if (total <= 1) return null;
+    const lastAssistant = [...messages]
+      .reverse()
+      .find((m) => m.role === "assistant");
+    if (!lastAssistant?.parts) return null;
+    let current = 0;
+    for (const part of lastAssistant.parts) {
+      if (part.type !== "data-agent-event") continue;
+      const data = (part as { data?: AgentEventData }).data;
+      if (
+        data?.type === "agent_start" &&
+        typeof data.round === "number" &&
+        data.round > current
+      ) {
+        current = data.round;
+      }
+    }
+    return current > 0 ? { current, total } : null;
   }, [messages, selectedPipeline]);
 
   // Dérivation pure : le panneau live s'affiche dès qu'au moins un agent
@@ -1458,19 +1536,24 @@ export function ChatShell({
   // Theatre view : agrège les sorties intermédiaires (data-agent-output)
   // + le texte streamé du synthétiseur final. Reconstruit la timeline
   // chronologique de la délibération du conseil.
-  const [theatreOpen, setTheatreOpen] = useState(false);
+  // Théâtre : piloté par l'id du message à afficher (null = fermé). Permet de
+  // rouvrir la délibération de N'IMPORTE quel message multi-agents passé, pas
+  // seulement le dernier — avant, l'accès disparaissait avec le panneau live.
+  const [theatreMessageId, setTheatreMessageId] = useState<string | null>(null);
+  const lastAssistantId = useMemo(
+    () =>
+      [...messages].reverse().find((m) => m.role === "assistant")?.id ?? null,
+    [messages]
+  );
   const theatreTurns: AgentTurn[] = useMemo(() => {
-    if (!selectedPipeline) return [];
-    const lastAssistant = [...messages]
-      .reverse()
-      .find((m) => m.role === "assistant");
-    if (!lastAssistant?.parts) return [];
+    if (!selectedPipeline || !theatreMessageId) return [];
+    const msg = messages.find((m) => m.id === theatreMessageId);
+    if (!msg?.parts) return [];
 
-    // Collecte tous les events agents et le texte streamé final du
-    // dernier message assistant.
+    // Collecte les events agents + le texte final du message ciblé.
     const events: AgentEventData[] = [];
     let finalText = "";
-    for (const part of lastAssistant.parts) {
+    for (const part of msg.parts) {
       if (part.type === "data-agent-event") {
         const d = (part as { data?: AgentEventData }).data;
         if (d) events.push(d);
@@ -1479,14 +1562,49 @@ export function ChatShell({
         if (text) finalText += text;
       }
     }
-    const isLastMessageStreaming = isBusy;
+    const isStreaming = isBusy && msg.id === messages[messages.length - 1]?.id;
     return buildAgentTurns(
-      lastAssistant.parts as { type: string; data?: unknown; text?: string }[],
+      msg.parts as { type: string; data?: unknown; text?: string }[],
       events,
       finalText || null,
-      isLastMessageStreaming
+      isStreaming
     );
-  }, [messages, selectedPipeline, isBusy]);
+  }, [messages, selectedPipeline, isBusy, theatreMessageId]);
+
+  // H4 : compétences détectées pour le dernier message assistant. Lues depuis
+  // la part data-skills-detected (persistée par H3a → survit au reload) et
+  // mappées en libellés lisibles.
+  const appliedSkills: string[] = useMemo(() => {
+    const lastAssistant = [...messages]
+      .reverse()
+      .find((m) => m.role === "assistant");
+    if (!lastAssistant) return [];
+    for (const part of lastAssistant.parts) {
+      if (part.type === "data-skills-detected") {
+        const slugs =
+          (part as { data?: { slugs?: string[] } }).data?.slugs ?? [];
+        return slugs.map((s) => skillLabels[s] ?? s);
+      }
+    }
+    return [];
+  }, [messages, skillLabels]);
+
+  // H8 : estimation AU POINT DE DÉPENSE. Le nombre d'appels LLM est exact
+  // (driver de coût d'un run multi-agents) ; le coût est une fourchette
+  // (tokens de sortie inconnus → suffixé « estimé »). Recalculé à chaque
+  // changement de modèle / pipeline / saisie, sans envoyer de requête.
+  // Placé après les useMemo qui dépendent de selectedPipeline pour ne pas
+  // casser la préservation de mémoïsation du React Compiler.
+  const estimatedCalls = estimateCalls({
+    mode: selectedPipeline?.mode ?? "sequential",
+    agents: selectedPipeline?.agentCount ?? 1,
+    rounds: selectedPipeline?.rounds ?? 1,
+  });
+  const estimatedRunCost = estimateRunCost({
+    modelId,
+    calls: estimatedCalls,
+    promptChars: input.length,
+  });
 
   // Auto-ouverture du DocPanel dès qu'un tool generate_document /
   // edit_document termine avec un document_id. On scanne les parts du
@@ -1672,6 +1790,15 @@ export function ChatShell({
                           />
                         ))}
                       </AgentStepsWrapper>
+                      {/* Accès PERMANENT à la délibération de ce message (le
+                          panneau live disparaît, pas ça). */}
+                      {!isLiveMessage && (
+                        <div className="mt-1">
+                          <OpenTheatreButton
+                            onClick={() => setTheatreMessageId(m.id)}
+                          />
+                        </div>
+                      )}
                     </div>
                   )}
                   {m.parts.map((part, i) => {
@@ -1964,16 +2091,34 @@ export function ChatShell({
             </div>
           )}
 
+          {appliedSkills.length > 0 && (
+            <div className="mb-2 flex flex-wrap items-center justify-center gap-1.5">
+              <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                Compétences appliquées
+              </span>
+              {appliedSkills.map((label) => (
+                <span
+                  key={label}
+                  className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/5 px-2 py-0.5 text-[11px] text-foreground"
+                >
+                  {label}
+                </span>
+              ))}
+            </div>
+          )}
+
           {selectedPipeline && (
             <div className="mb-3 flex justify-center">
               <LiveWorkflowPanel
                 open={livePanelOpen}
                 pipelineName={selectedPipeline.name}
                 agents={liveAgents}
+                round={councilRound?.current}
+                totalRounds={councilRound?.total}
                 onClose={() => setManuallyClosed(true)}
                 onOpenTheatre={
-                  theatreTurns.length > 0
-                    ? () => setTheatreOpen(true)
+                  lastAssistantId
+                    ? () => setTheatreMessageId(lastAssistantId)
                     : undefined
                 }
               />
@@ -1982,8 +2127,10 @@ export function ChatShell({
 
           {selectedPipeline && (
             <AgentTheatre
-              open={theatreOpen}
-              onOpenChange={setTheatreOpen}
+              open={theatreMessageId !== null}
+              onOpenChange={(o) => {
+                if (!o) setTheatreMessageId(null);
+              }}
               pipelineName={selectedPipeline.name}
               turns={theatreTurns}
             />
@@ -2124,6 +2271,16 @@ export function ChatShell({
             </div>
           </form>
 
+          {estimatedCalls > 1 && (
+            <p className="mt-2 text-[11px] text-muted-foreground text-center tabular-nums">
+              {selectedPipeline?.name} : ~{estimatedCalls} appels IA par question
+              {estimatedRunCost
+                ? ` · ~${formatCost(estimatedRunCost)} estimé`
+                : modelId
+                  ? " · coût non tarifé pour ce modèle"
+                  : ""}
+            </p>
+          )}
           <p className="mt-2 text-[11px] text-muted-foreground text-center">
             Louis n&apos;est pas un avocat. Vérifiez le badge de souveraineté
             avant d&apos;envoyer des données sensibles.

@@ -8,11 +8,16 @@ import { providerKeys } from "@/db/schema";
 import { getPipeline } from "../actions";
 import { PipelineActionsMenu } from "../pipeline-actions-menu";
 import { PipelineWorkflow } from "./pipeline-workflow";
+import { PipelineBoard } from "../pipeline-board";
 import { CloneToEditButton } from "./clone-to-edit-button";
 import { PipelineModeBar } from "./pipeline-mode-bar";
 import { AddAgentDialog } from "./add-agent-dialog";
+import { ExecutionOrderPanel } from "./execution-order-panel";
 import { InlineRename } from "./inline-rename";
 import { listEnabledModels } from "../../settings/models/actions";
+import { buildToolsForUser } from "@/lib/connectors/tools";
+import { buildMcpToolsForUser } from "@/lib/mcp/tools";
+import { getAgentSourceOptions } from "@/lib/projects/scope";
 
 export default async function PipelineEditorPage({
   params,
@@ -45,6 +50,24 @@ export default async function PipelineEditorPage({
     hint: r.hint,
   }));
 
+  // H11 : outils RÉELLEMENT disponibles pour cet utilisateur (connecteurs
+  // actifs + génération de documents + RAG si dispo + outils MCP synchronisés).
+  // Sert au multi-select de l'allowlist d'agent (fin du champ texte libre où
+  // une typo créait un agent sans outil, silencieusement).
+  const [connectorTools, mcpTools] = await Promise.all([
+    buildToolsForUser(userId),
+    buildMcpToolsForUser(userId),
+  ]);
+  const availableTools = [
+    ...Object.keys(connectorTools),
+    ...Object.keys(mcpTools),
+  ].sort((a, b) => a.localeCompare(b));
+
+  // Sources documentaires sélectionnables pour la portée RAG par agent
+  // (dossiers en arborescence + documents avec flag indexé).
+  const { folders: availableFolders, documents: availableDocuments } =
+    await getAgentSourceOptions(userId);
+
   return (
     <main className="mx-auto w-full max-w-6xl px-6 py-10 md:px-8 md:py-14">
       <header className="mb-10">
@@ -53,7 +76,7 @@ export default async function PipelineEditorPage({
           className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors mb-4"
         >
           <IconArrowLeft className="size-3.5" />
-          Bureau
+          Board
         </Link>
 
         <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -105,14 +128,33 @@ export default async function PipelineEditorPage({
       <PipelineModeBar pipeline={data.pipeline} agentCount={data.agents.length} />
 
       <div className="relative mt-6">
-        <PipelineWorkflow
-          pipeline={data.pipeline}
-          agents={data.agents}
-          providerKeys={keys}
-          enabledModels={enabledModels}
-        />
+        {/* Desktop : canvas React Flow. */}
+        <div className="hidden sm:block">
+          <PipelineWorkflow
+            pipeline={data.pipeline}
+            agents={data.agents}
+            providerKeys={keys}
+            enabledModels={enabledModels}
+            availableTools={availableTools}
+            availableFolders={availableFolders}
+            availableDocuments={availableDocuments}
+          />
+        </div>
+        {/* Mobile (H7) : vue-liste verticale — le canvas est inutilisable au
+            doigt sous 640px. */}
+        <div className="sm:hidden">
+          <PipelineBoard
+            pipeline={data.pipeline}
+            agents={data.agents}
+            providerKeys={keys}
+            enabledModels={enabledModels}
+            availableTools={availableTools}
+            availableFolders={availableFolders}
+            availableDocuments={availableDocuments}
+          />
+        </div>
         {!data.pipeline.isPreset && (
-          <div className="absolute left-4 bottom-4 z-10">
+          <div className="mt-4 sm:mt-0 sm:absolute sm:left-4 sm:bottom-4 sm:z-10">
             <AddAgentDialog
               pipelineId={data.pipeline.id}
               providerKeys={keys}
@@ -138,6 +180,13 @@ export default async function PipelineEditorPage({
         )}
         <span>· Chaque exécution est tracée dans l&apos;audit</span>
       </div>
+
+      <ExecutionOrderPanel
+        pipelineId={data.pipeline.id}
+        agents={data.agents}
+        mode={data.pipeline.mode}
+        editable={!data.pipeline.isPreset}
+      />
     </main>
   );
 }

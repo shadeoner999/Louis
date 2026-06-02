@@ -5,12 +5,34 @@ import { Handle, Position, type NodeProps } from "@xyflow/react";
 import {
   IconAlertTriangle,
   IconCheck,
+  IconDatabase,
+  IconDatabaseOff,
   IconPencil,
   IconTrash,
 } from "@tabler/icons-react";
 import { cn } from "@/lib/utils";
 import type { PipelineAgent, ProviderKey } from "@/db/schema";
 import { roleMeta } from "../agent-role-meta";
+
+/**
+ * Libellé de transparence de la portée RAG d'un agent. `null` pour le cas par
+ * défaut (hérite du périmètre de la conversation) afin de ne pas alourdir le
+ * canvas — on ne signale QUE les agents à portée restreinte.
+ */
+function ragScopeBadge(
+  scope: PipelineAgent["ragScope"]
+): { label: string; off: boolean } | null {
+  if (!scope || scope.mode === "inherit" || scope.mode === "project") {
+    return null;
+  }
+  if (scope.mode === "none") return { label: "RAG désactivé", off: true };
+  if (scope.mode === "folders") {
+    const n = scope.folderIds.length;
+    return { label: `lit : ${n} dossier${n > 1 ? "s" : ""}`, off: false };
+  }
+  const n = scope.documentIds.length;
+  return { label: `lit : ${n} doc${n > 1 ? "s" : ""}`, off: false };
+}
 
 /**
  * Données portées par chaque node React Flow. Le composant lit la
@@ -42,6 +64,7 @@ function AgentFlowNodeBase({ data }: NodeProps) {
   const meta = roleMeta(agent.role);
   const Icon = meta.icon;
   const provider = providerKeys.find((k) => k.id === agent.providerKeyId);
+  const rag = ragScopeBadge(agent.ragScope);
 
   return (
     <div
@@ -82,10 +105,15 @@ function AgentFlowNodeBase({ data }: NodeProps) {
           Erreur
         </span>
       )}
+      {/* Handle conservé pour l'ANCRAGE des edges auto-générées, mais invisible
+          et non-interactif : le graphe n'est pas un éditeur de connexions
+          (nodesConnectable=false). Avant, des poignées visibles laissaient
+          croire qu'on pouvait relier les agents à la main (H7). */}
       <Handle
         type="target"
         position={Position.Left}
-        className="!size-2 !border !border-foreground/40 !bg-background"
+        isConnectable={false}
+        className="!size-2 !border-0 !bg-transparent !opacity-0 !pointer-events-none"
       />
 
       {/* Header */}
@@ -159,6 +187,23 @@ function AgentFlowNodeBase({ data }: NodeProps) {
               {provider.label}
             </span>
           )}
+          {rag && (
+            <span
+              className={cn(
+                "inline-flex items-center gap-1 rounded border px-1.5 py-0.5",
+                rag.off
+                  ? "border-dashed border-border bg-background text-muted-foreground"
+                  : "border-border bg-background text-foreground"
+              )}
+            >
+              {rag.off ? (
+                <IconDatabaseOff className="size-3" />
+              ) : (
+                <IconDatabase className="size-3" />
+              )}
+              {rag.label}
+            </span>
+          )}
         </div>
 
         {agent.systemPrompt && (
@@ -187,7 +232,8 @@ function AgentFlowNodeBase({ data }: NodeProps) {
       <Handle
         type="source"
         position={Position.Right}
-        className="!size-2 !border !border-foreground/40 !bg-background"
+        isConnectable={false}
+        className="!size-2 !border-0 !bg-transparent !opacity-0 !pointer-events-none"
       />
     </div>
   );

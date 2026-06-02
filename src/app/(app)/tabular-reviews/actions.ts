@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { after } from "next/server";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, lt } from "drizzle-orm";
 import { z } from "zod";
 import { generateText, Output, type LanguageModel } from "ai";
 import { auth } from "@/auth";
@@ -19,6 +19,38 @@ import { log } from "@/lib/log";
 import { nanoid } from "nanoid";
 
 const EXTRACTION_CONCURRENCY = 3;
+
+// H15-f : au-delà de ce délai, une ligne « running » est considérée comme
+// abandonnée (after() interrompu : redéploiement, crash, serverless qui
+// coupe) et requalifiée pour redevenir relançable.
+const STALE_RUNNING_MS = 5 * 60_000;
+
+/**
+ * H15-e : intègre le `format` de colonne dans la description du champ
+ * d'extraction, pour que le modèle produise des valeurs au bon format.
+ */
+function describeColumn(c: ReviewColumn): string {
+  switch (c.format) {
+    case "date":
+      return `${c.prompt} (si une date est trouvée, réponds au format JJ/MM/AAAA)`;
+    case "money":
+      return `${c.prompt} (réponds par un montant avec sa devise, ex. « 12 500 € »)`;
+    case "boolean":
+      return `${c.prompt} (réponds uniquement par « Oui » ou « Non »)`;
+    case "bulleted_list":
+      return `${c.prompt} (réponds par une liste à puces, un élément par ligne)`;
+    default:
+      return c.prompt;
+  }
+}
+
+function buildValuesSchema(columns: ReviewColumn[]) {
+  return z.object(
+    Object.fromEntries(
+      columns.map((c) => [c.id, z.string().describe(describeColumn(c))])
+    )
+  );
+}
 
 async function requireUserId(): Promise<string> {
   const session = await auth();
@@ -122,6 +154,167 @@ export async function deleteReviewRow(rowId: string): Promise<void> {
 }
 
 /**
+ * H15-a : ré-extrait UNE ligne (toutes ses colonnes), même si elle était déjà
+ * « ok ». Utile pour relancer un document dont l'extraction a déçu, sans
+ * toucher aux autres lignes.
+ */
+export async function rerunReviewRow(rowId: string): Promise<void> {
+  const userId = await requireUserId();
+  const [row] = await db
+    .select({
+      reviewId: tabularReviewRows.reviewId,
+      documentId: tabularReviewRows.documentId,
+      providerKeyId: tabularReviews.providerKeyId,
+      modelId: tabularReviews.modelId,
+      columns: tabularReviews.columns,
+    })
+    .from(tabularReviewRows)
+    .innerJoin(
+      tabularReviews,
+      eq(tabularReviews.id, tabularReviewRows.reviewId)
+    )
+    .where(
+      and(
+        eq(tabularReviewRows.id, rowId),
+        eq(tabularReviews.userId, userId)
+      )
+    )
+    .limit(1);
+  if (!row || !row.providerKeyId || !row.modelId || !row.columns?.length) return;
+
+  await db
+    .update(tabularReviewRows)
+    .set({ status: "running", error: null, updatedAt: new Date() })
+    .where(eq(tabularReviewRows.id, rowId));
+  revalidatePath(`/tabular-reviews/${row.reviewId}`);
+
+  const { reviewId, documentId, providerKeyId, modelId, columns } = row;
+  after(async () => {
+    try {
+      await processReviewRows({
+        userId,
+        reviewId,
+        providerKeyId,
+        modelId,
+        columns,
+        rows: [{ id: rowId, documentId }],
+      });
+    } catch (err) {
+      log.error("tabular-reviews", "rerun row failed", {
+        error: err instanceof Error ? err.message : err,
+      });
+    }
+  });
+}
+
+/**
+ * H15-b : ré-extrait UNE colonne sur toutes les lignes — à déclencher après
+ * avoir modifié son prompt. Le merge dans extractRow préserve les valeurs des
+ * autres colonnes.
+ */
+export async function rerunReviewColumn(
+  reviewId: string,
+  columnId: string
+): Promise<ActionResult> {
+  const userId = await requireUserId();
+  const [review] = await db
+    .select()
+    .from(tabularReviews)
+    .where(
+      and(eq(tabularReviews.id, reviewId), eq(tabularReviews.userId, userId))
+    )
+    .limit(1);
+  if (!review) return { ok: false, error: "Analyse introuvable." };
+  if (!review.providerKeyId || !review.modelId) {
+    return { ok: false, error: "Configuration du modèle incomplète." };
+  }
+  const col = review.columns.find((c) => c.id === columnId);
+  if (!col) return { ok: false, error: "Colonne introuvable." };
+
+  const rows = await db
+    .update(tabularReviewRows)
+    .set({ status: "running", error: null, updatedAt: new Date() })
+    .where(eq(tabularReviewRows.reviewId, reviewId))
+    .returning({
+      id: tabularReviewRows.id,
+      documentId: tabularReviewRows.documentId,
+    });
+  revalidatePath(`/tabular-reviews/${reviewId}`);
+  if (rows.length === 0) return { ok: true };
+
+  const { providerKeyId, modelId } = review;
+  after(async () => {
+    try {
+      await processReviewRows({
+        userId,
+        reviewId,
+        providerKeyId,
+        modelId,
+        columns: [col],
+        rows,
+      });
+    } catch (err) {
+      log.error("tabular-reviews", "rerun column failed", {
+        error: err instanceof Error ? err.message : err,
+      });
+    }
+  });
+  return { ok: true };
+}
+
+const addDocsSchema = z.object({
+  documentIds: z.array(z.uuid()).min(1).max(200),
+});
+
+/**
+ * H15-c : ajoute des documents à une analyse existante (la promesse « vous
+ * pourrez en ajouter plus tard »). N'insère que les documents de
+ * l'utilisateur avec du texte extrait ; pas de doublon (index unique).
+ */
+export async function addReviewDocuments(
+  reviewId: string,
+  documentIds: string[]
+): Promise<ActionResult> {
+  const userId = await requireUserId();
+  const parsed = addDocsSchema.safeParse({ documentIds });
+  if (!parsed.success) return { ok: false, error: "Sélection invalide." };
+
+  const [review] = await db
+    .select({ id: tabularReviews.id })
+    .from(tabularReviews)
+    .where(
+      and(eq(tabularReviews.id, reviewId), eq(tabularReviews.userId, userId))
+    )
+    .limit(1);
+  if (!review) return { ok: false, error: "Analyse introuvable." };
+
+  const validDocs = await db
+    .select({ id: documents.id })
+    .from(documents)
+    .where(
+      and(
+        eq(documents.userId, userId),
+        inArray(documents.id, parsed.data.documentIds),
+        isNotNull(documents.extractedText)
+      )
+    );
+  if (validDocs.length === 0) {
+    return {
+      ok: false,
+      error: "Aucun document éligible (texte non extrait ?).",
+    };
+  }
+
+  await db
+    .insert(tabularReviewRows)
+    .values(validDocs.map((d) => ({ reviewId, documentId: d.id })))
+    .onConflictDoNothing();
+
+  revalidatePath(`/tabular-reviews/${reviewId}`);
+  return { ok: true };
+}
+
+/**
  * Lance l'extraction pour toutes les lignes pending/error d'un review.
  *
  * Le server action retourne dès que les lignes ont été marquées "running" :
@@ -147,6 +340,24 @@ export async function runTabularReview(reviewId: string): Promise<void> {
   if (!review) return;
   if (!review.providerKeyId || !review.modelId) return;
   if (!review.columns || review.columns.length === 0) return;
+
+  // H15-f : requalifie d'abord les lignes « running » abandonnées (au-delà du
+  // seuil) en « error », pour qu'elles soient reprises par l'update suivant.
+  // Les « running » récentes (run légitime en cours) ne sont pas touchées.
+  await db
+    .update(tabularReviewRows)
+    .set({
+      status: "error",
+      error: "Traitement interrompu — relancé.",
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(tabularReviewRows.reviewId, reviewId),
+        eq(tabularReviewRows.status, "running"),
+        lt(tabularReviewRows.updatedAt, new Date(Date.now() - STALE_RUNNING_MS))
+      )
+    );
 
   // Snapshot des lignes à traiter, en une seule update pour libérer le
   // request handler immédiatement.
@@ -210,11 +421,7 @@ async function processReviewRows({
   const key = await loadProviderKey(userId, providerKeyId);
   const model = modelFromKey(key, modelId);
 
-  const valuesSchema = z.object(
-    Object.fromEntries(
-      columns.map((c) => [c.id, z.string().describe(c.prompt)])
-    )
-  );
+  const valuesSchema = buildValuesSchema(columns);
 
   // Concurrency limiter — une "fenêtre coulissante" de N promesses en vol.
   let cursor = 0;
@@ -281,10 +488,21 @@ async function extractRow({
       prompt: `Document : "${doc.filename}"\n\n${promptDoc}\n\nExtrais les valeurs demandées par les descriptions des champs.`,
     });
 
+    // Merge (pas overwrite) : préserve les valeurs des AUTRES colonnes — clé
+    // pour la ré-extraction d'une seule colonne (H15-b). Pour un run complet,
+    // les valeurs de départ sont vides, donc merge = set.
+    const [existing] = await db
+      .select({ values: tabularReviewRows.values })
+      .from(tabularReviewRows)
+      .where(eq(tabularReviewRows.id, row.id))
+      .limit(1);
     await db
       .update(tabularReviewRows)
       .set({
-        values: result.output as Record<string, string>,
+        values: {
+          ...(existing?.values ?? {}),
+          ...(result.output as Record<string, string>),
+        },
         status: "ok",
         error: null,
         updatedAt: new Date(),

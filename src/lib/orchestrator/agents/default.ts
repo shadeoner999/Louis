@@ -7,6 +7,7 @@ import {
 import { loadProviderKey, modelFromKey } from "@/lib/providers/factory";
 import { buildToolsForUser } from "@/lib/connectors/tools";
 import { buildMcpToolsForUser } from "@/lib/mcp/tools";
+import { resolveAgentRag, omitDocumentaryRagTools } from "./rag-scope";
 import type {
   Agent,
   AgentContext,
@@ -89,14 +90,17 @@ export class DefaultAgent implements Agent {
 
     const system = composeSystem(DEFAULT_CHAT_SYSTEM_PROMPT, this.definition, ctx);
 
+    const { scope, hideDocumentaryRag } = await resolveAgentRag(
+      ctx,
+      this.definition.ragScope
+    );
     const [connectorTools, mcpTools] = await Promise.all([
-      buildToolsForUser(ctx.userId),
+      buildToolsForUser(ctx.userId, scope),
       buildMcpToolsForUser(ctx.userId),
     ]);
-    const tools = filterTools(
-      { ...connectorTools, ...mcpTools },
-      this.definition.toolAllowlist
-    );
+    let merged: ToolSet = { ...connectorTools, ...mcpTools };
+    if (hideDocumentaryRag) merged = omitDocumentaryRagTools(merged);
+    const tools = filterTools(merged, this.definition.toolAllowlist);
 
     const stream = streamText({
       model,
@@ -104,6 +108,8 @@ export class DefaultAgent implements Agent {
       messages: modelMessages,
       tools,
       stopWhen: stepCountIs(5),
+      temperature: this.definition.temperature ?? undefined,
+      abortSignal: ctx.abortSignal,
     });
 
     return { kind: "stream", stream };

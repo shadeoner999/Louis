@@ -1,4 +1,7 @@
 import type { streamText, UIMessage } from "ai";
+import type { AgentRagScope } from "@/db/schema/pipelines";
+
+export type { AgentRagScope };
 
 /**
  * Type retourné par streamText() — utiliser le type inféré garde la
@@ -38,6 +41,16 @@ export interface AgentDefinition {
    * outils disponibles à l'utilisateur (connecteurs + MCP).
    */
   toolAllowlist?: string[] | null;
+  /**
+   * Portée documentaire RAG propre à l'agent. null/undefined/`inherit` =
+   * périmètre de la conversation (comportement historique). Cf. resolveAgentRag.
+   */
+  ragScope?: AgentRagScope | null;
+  /**
+   * Température d'échantillonnage. null/undefined = défaut du provider.
+   * Bas (~0.2) = factuel/déterministe ; haut (~0.8) = créatif.
+   */
+  temperature?: number | null;
 }
 
 /**
@@ -72,10 +85,27 @@ export interface AgentContext {
   messages: UIMessage[];
   documentIds?: string[];
   systemPromptExtras?: string;
+  /**
+   * Périmètre projet de la conversation (modèle dossier = projet). Quand il
+   * est présent, les outils documentaires sont scopés aux documents du projet
+   * et l'outil de recherche dans l'historique des conversations est activé.
+   */
+  projectId?: string | null;
+  /** IDs des documents du projet (sous-arbre du dossier-racine). */
+  projectDocumentIds?: string[];
+  /** Dossier-racine du projet — destination des documents générés/édités. */
+  projectFolderId?: string | null;
   /** Sortie texte des agents précédents dans la pipeline, dans l'ordre. */
   priorOutputs?: AgentPriorOutput[];
   /** Tag de corrélation pour le tracing. */
   pipelineRunId?: string;
+  /**
+   * Signal d'annulation propagé depuis la requête HTTP (req.signal). Quand
+   * l'utilisateur clique « Stop », le fetch est aborté → ce signal s'abort →
+   * propagé jusqu'à streamText pour couper réellement l'appel LLM serveur
+   * (et donc la facturation), pas seulement le rendu client.
+   */
+  abortSignal?: AbortSignal;
 }
 
 export interface AgentPriorOutput {
@@ -135,6 +165,12 @@ export type OrchestratorEvent =
       outputTokens?: number;
       preview?: string;
       round?: number;
+      /**
+       * Modèle effectif de CET agent (def.modelOverride). Sert au coût par
+       * agent (agent_runs.modelId) : sans lui, l'audit trail recopierait le
+       * modèle global au lieu du modèle réellement utilisé par l'agent.
+       */
+      modelId?: string | null;
     }
   | {
       type: "agent_error";
@@ -144,6 +180,7 @@ export type OrchestratorEvent =
       label: string;
       error: string;
       round?: number;
+      modelId?: string | null;
     };
 
 export type OrchestratorEventListener = (event: OrchestratorEvent) => void;

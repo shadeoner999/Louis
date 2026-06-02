@@ -17,6 +17,10 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import type { Pipeline, PipelineAgent, ProviderKey } from "@/db/schema";
+import type {
+  AgentSourceFolder,
+  AgentSourceDocument,
+} from "@/lib/projects/scope";
 import { AgentEditSheet } from "../agent-edit-sheet";
 import { AgentFlowNode, type AgentFlowNodeData } from "./agent-flow-node";
 import { AnimatedEdge } from "./animated-edge";
@@ -52,6 +56,11 @@ interface PipelineWorkflowProps {
     hint?: string | null;
   }>;
   liveStates?: Record<string, "idle" | "active" | "done" | "error">;
+  /** Outils réellement disponibles pour l'utilisateur (multi-select allowlist). */
+  availableTools?: string[];
+  /** Dossiers/documents de l'utilisateur (sélecteurs de portée RAG par agent). */
+  availableFolders?: AgentSourceFolder[];
+  availableDocuments?: AgentSourceDocument[];
 }
 
 const nodeTypes: NodeTypes = {
@@ -180,6 +189,9 @@ function PipelineWorkflowInner({
   providerKeys,
   enabledModels,
   liveStates,
+  availableTools,
+  availableFolders,
+  availableDocuments,
 }: PipelineWorkflowProps) {
   const router = useRouter();
   const [editingAgent, setEditingAgent] = useState<PipelineAgent | null>(null);
@@ -187,7 +199,9 @@ function PipelineWorkflowInner({
   const [pending, startTransition] = useTransition();
   const editable = !pipeline.isPreset && !pending;
   const mode = (pipeline.mode as "sequential" | "council" | "parallel") ?? "sequential";
-  const dragEnabled = editable && agents.length > 1;
+  // H7 : le drag ne ré-ordonne l'exécution QU'en mode séquentiel (en
+  // council/parallel, la position n'a aucun effet sur l'ordre → drag trompeur).
+  const dragEnabled = editable && mode === "sequential" && agents.length > 1;
 
   const handleDelete = useCallback((agent: PipelineAgent) => {
     setPendingDelete(agent);
@@ -421,6 +435,9 @@ function PipelineWorkflowInner({
           agent={editingAgent}
           providerKeys={providerKeys}
           enabledModels={enabledModels}
+          availableTools={availableTools}
+          availableFolders={availableFolders}
+          availableDocuments={availableDocuments}
           open={!!editingAgent}
           onOpenChange={(open) => {
             if (!open) setEditingAgent(null);

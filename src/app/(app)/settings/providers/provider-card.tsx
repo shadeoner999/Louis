@@ -12,6 +12,7 @@ import {
   IconStar,
   IconTrash,
 } from "@tabler/icons-react";
+import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -144,7 +145,10 @@ export function ProviderCard({ type, keys }: Props) {
                 checked={primary.isActive}
                 disabled={pending}
                 onCheckedChange={() => {
-                  startTransition(() => toggleProviderKeyActive(primary.id));
+                  startTransition(async () => {
+                    const result = await toggleProviderKeyActive(primary.id);
+                    if (!result.ok) toast.error(result.error);
+                  });
                 }}
                 aria-label="Activer ce provider"
               />
@@ -207,7 +211,11 @@ export function ProviderCard({ type, keys }: Props) {
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
                   <DropdownMenuItem
-                    disabled={pending || !meta.testBaseUrl}
+                    // R5 : testable dès qu'une base existe — soit l'URL du
+                    // catalogue, soit le baseUrl saisi par l'utilisateur
+                    // (Scaleway/OVH/Albert/OpenAI-compatible self-host). Avant,
+                    // ces providers avaient un test grisé sans explication.
+                    disabled={pending || !(meta.testBaseUrl || primary.baseUrl)}
                     onSelect={() => {
                       startTransition(() => testProviderKey(primary.id));
                     }}

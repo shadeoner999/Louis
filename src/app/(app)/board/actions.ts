@@ -24,6 +24,24 @@ async function requireUserId(): Promise<string> {
   return session.user.id;
 }
 
+const pipelineMetaSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  description: z.string().trim().max(500).nullable().optional(),
+  mode: z.enum(["sequential", "council", "parallel"]).optional(),
+  rounds: z.number().int().min(1).max(6).optional(),
+});
+
+const ragScopeSchema = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("inherit") }),
+  z.object({ mode: z.literal("none") }),
+  z.object({ mode: z.literal("project") }),
+  z.object({ mode: z.literal("folders"), folderIds: z.array(z.uuid()).max(50) }),
+  z.object({
+    mode: z.literal("documents"),
+    documentIds: z.array(z.uuid()).max(200),
+  }),
+]);
+
 const AGENT_ROLE_VALUES = [
   "default-chat",
   "orchestrator",
@@ -34,19 +52,15 @@ const AGENT_ROLE_VALUES = [
   "legifrance",
 ] as const;
 
-const pipelineMetaSchema = z.object({
-  name: z.string().trim().min(1).max(120),
-  description: z.string().trim().max(500).nullable().optional(),
-  mode: z.enum(["sequential", "council", "parallel"]).optional(),
-  rounds: z.number().int().min(1).max(6).optional(),
-});
-
 const agentUpdateSchema = z.object({
   label: z.string().trim().min(1).max(80).optional(),
+  role: z.enum(AGENT_ROLE_VALUES).optional(),
   providerKeyId: z.uuid().nullable().optional(),
   modelOverride: z.string().trim().max(120).nullable().optional(),
   systemPrompt: z.string().max(8000).nullable().optional(),
   toolAllowlist: z.array(z.string()).nullable().optional(),
+  ragScope: ragScopeSchema.nullable().optional(),
+  temperature: z.number().min(0).max(2).nullable().optional(),
 });
 
 const agentInsertSchema = z.object({
@@ -263,6 +277,7 @@ export async function updatePipelineAgent(
     .update(pipelineAgents)
     .set({
       ...(parsed.data.label !== undefined && { label: parsed.data.label }),
+      ...(parsed.data.role !== undefined && { role: parsed.data.role }),
       ...(parsed.data.providerKeyId !== undefined && {
         providerKeyId: parsed.data.providerKeyId,
       }),
@@ -274,6 +289,12 @@ export async function updatePipelineAgent(
       }),
       ...(parsed.data.toolAllowlist !== undefined && {
         toolAllowlist: parsed.data.toolAllowlist,
+      }),
+      ...(parsed.data.ragScope !== undefined && {
+        ragScope: parsed.data.ragScope,
+      }),
+      ...(parsed.data.temperature !== undefined && {
+        temperature: parsed.data.temperature,
       }),
       updatedAt: new Date(),
     })

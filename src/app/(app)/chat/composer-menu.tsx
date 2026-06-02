@@ -63,7 +63,7 @@ export function ComposerMenu({
     <DropdownMenu>
       <DropdownMenuTrigger
         disabled={disabled}
-        className="inline-flex items-center justify-center size-10 rounded-md hover:bg-accent transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+        className="inline-flex items-center justify-center size-10 rounded-md hover:bg-accent transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/40"
         aria-label="Insérer ou configurer"
         title="Insérer ou configurer"
       >
@@ -89,7 +89,7 @@ export function ComposerMenu({
           <DropdownMenuSub>
             <DropdownMenuSubTrigger>
               <IconSparkles className="size-4" />
-              Workflow
+              Trames
             </DropdownMenuSubTrigger>
             <DropdownMenuSubContent className="w-72">
               {workflows.slice(0, 12).map((w) => (
@@ -104,14 +104,14 @@ export function ComposerMenu({
               <DropdownMenuSeparator />
               <DropdownMenuItem onSelect={onPickWorkflow}>
                 <IconSparkles className="size-4" />
-                Voir tous les workflows
+                Voir toutes les trames
               </DropdownMenuItem>
             </DropdownMenuSubContent>
           </DropdownMenuSub>
         ) : (
           <DropdownMenuItem onSelect={onPickWorkflow}>
             <IconSparkles className="size-4" />
-            Workflow
+            Trames
           </DropdownMenuItem>
         )}
 
@@ -119,7 +119,7 @@ export function ComposerMenu({
           <>
             <DropdownMenuSeparator />
             <DropdownMenuLabel className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">
-              Bureau
+              Board
             </DropdownMenuLabel>
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>
