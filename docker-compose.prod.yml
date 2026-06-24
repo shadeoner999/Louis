@@ -110,6 +110,14 @@ services:
       GOTENBERG_URL: http://gotenberg:3000
       AUTH_SECRET: ${AUTH_SECRET:?définir AUTH_SECRET dans .env}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:?définir ENCRYPTION_KEY dans .env}
+      # Backend d'embedding souverain optionnel (Ollama/vLLM/TEI auto-hébergé).
+      # Compose n'injecte PAS automatiquement le .env dans le conteneur : sans
+      # ce passthrough, LOUIS_EMBEDDING_BASE_URL reste invisible côté app et
+      # l'indexation retombe sur mistral-embed. Vide → repli sur la clé Mistral.
+      # Le modèle doit produire des vecteurs de dimension 1024 (cf. EMBEDDING_DIM).
+      LOUIS_EMBEDDING_BASE_URL: ${LOUIS_EMBEDDING_BASE_URL:-}
+      LOUIS_EMBEDDING_MODEL: ${LOUIS_EMBEDDING_MODEL:-}
+      LOUIS_EMBEDDING_API_KEY: ${LOUIS_EMBEDDING_API_KEY:-}
     depends_on:
       migrate:
         condition: service_completed_successfully
